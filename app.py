@@ -2,7 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import yfinance as yf
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from datetime import datetime
 
@@ -20,22 +20,25 @@ def save_data_safely(df, table_name, engine):
     if df.empty:
         return
 
-    with engine.connect() as conn:
-        for _, row in df.iterrows():
-            # Use CAST(x AS DATE) instead of x::date to avoid Python syntax errors
-            delete_sql = text(f"""
-                DELETE FROM {table_name} 
-                WHERE ticker_symbol = :ticker 
-                AND CAST(published_date AS DATE) = CAST(:date AS DATE)
-            """)
-            
-            conn.execute(delete_sql, {
-                "ticker": row['ticker_symbol'], 
-                "date": row['published_date']
-            })
-            conn.commit()
+    # 1. Check if table exists first! (Fixes the "no such table" crash)
+    inspector = inspect(engine)
+    if table_name in inspector.get_table_names():
+        with engine.connect() as conn:
+            for _, row in df.iterrows():
+                # 2. SQLite-Compatible Date Logic:
+                # We use DATE(...) instead of CAST which works better for SQLite
+                delete_sql = text(f"""
+                    DELETE FROM {table_name} 
+                    WHERE ticker_symbol = :ticker 
+                    AND DATE(published_date) = DATE(:date)
+                """)
+                conn.execute(delete_sql, {
+                    "ticker": row['ticker_symbol'], 
+                    "date": row['published_date']
+                })
+                conn.commit()
 
-    # Insert the fresh data
+    # 3. Save the fresh data (This will create the table if it's missing)
     df.to_sql(table_name, engine, if_exists='append', index=False)
 
 def run_full_pipeline():
@@ -128,4 +131,5 @@ if __name__ == "__main__":
         run_full_pipeline()
         print("\n✅ PIPELINE SUCCESS: Check your dashboard at localhost:8501")
     except Exception as e:
+
         print(f"❌ FATAL ERROR: {e}")
